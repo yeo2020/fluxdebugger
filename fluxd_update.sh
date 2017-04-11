@@ -1,7 +1,6 @@
 #! /bin/bash
 
-LOCAL_REPO=/home/pi/FluxPlanet/fluxdebugger
-
+LOCAL_REPO=/home/pi/fluxd
 # GIT_CLONE_COMMAND="git clone https://github.com/yeo2020/fluxdebugger.git"
 # GIT_RESET_COMMAND="git reset --hard origin/master"
 # GIT_PULL_COMMAND="git pull"

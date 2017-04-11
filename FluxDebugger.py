@@ -21,7 +21,9 @@ import numpy as np
 from uuid import getnode
 
 global ver
-ver = '0.06'
+ver = '0.1'
+
+global is_cam
 
 def restartPi():
     print '#####Restart PI #####'
@@ -32,45 +34,58 @@ def restartPi():
 
 def removeLogs():
     print '#### Remove logs #####'
-    baseDir = '/home/pi/FluxPlanet/fluxdebugger'
+    baseDir = '/home/pi/fluxd'
     fileList = os.listdir(baseDir)
     txtList = []
 
     for filename in fileList:
         name, ext = os.path.splitext(filename)
         if ext == '.txt':
-            txtList.append(filename)
+            txtList.append(name)
 
-    # remain the last txt file
-    txtList.pop(len(txtList) - 1)
+    # find last log file
+    maxtxt = 0
+    for txtname in txtList:
+        if(int(txtname) > maxtxt):
+            maxtxt = int(txtname)
 
     for txtname in txtList:
-        fullname = baseDir + '/' + txtname
+        if(int(txtname) == maxtxt):
+            continue
+
+        fullname = baseDir + '/' + txtname + '.txt'
         os.remove(fullname)
 
     print 'Log files have been removed!'
 
-def takePhoto(gain, exposure):
+def detectCamModule():
+    global is_cam
+    cmd = "vcgencmd get_camera | awk '{split($NF, a, \"=\"); print a[2]}'"
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    output = process.communicate()[0]
+    is_cam = int(output)
+
+def takePhoto(gain, exposure, manual):
     print '##### Take photo #####'
     
     cmd = "/home/pi/FluxPlanet/userland/camera_i2c"
     process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     process.communicate()
 
-    cmd = "sudo /home/pi/FluxPlanet/fluxdebugger/rpiraw -g %d -e %d -o /var/www/html/fluxd/rpiraw.raw" % (gain, exposure)
+    cmd = "sudo /home/pi/fluxd/rpiraw -g %d -e %d -m %d -o /var/www/html/fluxd/rpiraw.raw" % (int(gain), int(exposure), int(manual))
     process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     process.communicate()
 
-def convertImg():
-    print "debyaer"
-    cmd = "/home/pi/FluxPlanet/fluxdebugger/debayer -s %f -i /var/www/html/fluxd/rpiraw.raw -o /var/www/html/fluxd/rpiraw.ppm" % (0.25, )
+def convertImg(scale, enhance):
+    cmd = "/home/pi/fluxd/debayer -sf 1 -s %f -c %f -i /var/www/html/fluxd/rpiraw.raw -o /var/www/html/fluxd/rpiraw.ppm" % (float(scale), float(enhance))
     print cmd
     process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     process.communicate()
 
     print "PIL"
-    # ppm to jpg
+    # ppm to jpg & png
     Image.open("/var/www/html/fluxd/rpiraw.ppm").save("/var/www/html/fluxd/rpiraw.jpg")
+    Image.open("/var/www/html/fluxd/rpiraw.ppm").save("/var/www/html/fluxd/rpiraw.png")
 
 def get_ip_address(ifname):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -104,6 +119,7 @@ server_found = False
 global server_address
 
 def listenToServer():
+    global is_cam
     global ver
     global server_address
     global server_found
@@ -138,7 +154,7 @@ def listenToServer():
             print 'Received server address: ' + addr[0]
             server_address = addr[0]
             
-            jsonString = '{"ACK" : { "MAC" : "' + str(getnode()) + '", "VER" : "' + ver + '"} }'
+            jsonString = '{"ACK" : { "MAC" : "' + str(getnode()) + '", "VER" : "' + ver + '", "CAM" : ' + str(is_cam) + '} }'
             conn.send(jsonString)
             server_found = True
         # elif 'sebservice' in serverData:
@@ -172,6 +188,7 @@ def sendMsgToServer(msg):
  
 
 def broadcastReceiver():
+    global is_cam
     global ver
     global server_found
 
@@ -199,25 +216,28 @@ def broadcastReceiver():
         if "led" in data:
             cmdHandler(data)
         elif "WakeUp" in data :
-            jsonString = '{"RES": "WokeUp", "DATA" : { "MAC" : "' + str(getnode()) + '", "VER" : "' + ver + '"} }'
+            jsonString = '{"RES": "WokeUp", "DATA" : { "MAC" : "' + str(getnode()) + '", "VER" : "' + ver + '", "CAM" : ' + str(is_cam) + '} }'
             sendMsgToServer(jsonString)
         elif "Update" in data :
             jData =  json.loads(data)
             masterIP = jData['Update']['serverip'];
-            cmd = "/home/pi/bin/git_fluxdebugger_update.sh %s" % (masterIP, )
+            cmd = "/home/pi/bin/fluxdebugger_update.sh %s" % (masterIP, )
             process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
             process.communicate()
             restartPi()
         elif "RmLogs" in data :
             removeLogs()
         elif "Convert" in data :
+            if not is_cam:
+                continue
             print "convert"
-            # jData =  json.loads(data)
-            # takePhoto(jData['Take']['gain'], jData['Take']['exposure'])
-            convertImg()
-        elif "Take" in data :
             jData =  json.loads(data)
-            takePhoto(jData['Take']['gain'], jData['Take']['exposure'])
+            convertImg(jData['Convert']['scale'], jData['Convert']['enhance'])
+        elif "Take" in data :
+            if not is_cam:
+                continue
+            jData =  json.loads(data)
+            takePhoto(jData['Take']['gain'], jData['Take']['exposure'], jData['Take']['manual'])
         elif data != 'Controller' :
             cmdHandler(data)
 
@@ -246,9 +266,10 @@ def slaveReady():
 
     broadcastReceiver();
 
+# start FluxDebugger
 
 # ps -ef | grep FluxDebugger | grep sudo | awk '{print $2}' | xargs sudo kill -9
 # sudo netstat -nap | grep 4123 | awk '{split($NF, a, "/"); print a[1]}' | xargs sudo kill -9
-    
+detectCamModule()
 Thread(target = slaveReady).start()
 listenToServer()
