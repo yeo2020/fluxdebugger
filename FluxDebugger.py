@@ -21,7 +21,7 @@ import numpy as np
 from uuid import getnode
 
 global ver
-ver = '0.1'
+ver = '0.21'
 
 global is_cam
 
@@ -65,27 +65,26 @@ def detectCamModule():
     output = process.communicate()[0]
     is_cam = int(output)
 
-def takePhoto(gain, exposure, manual):
-    print '##### Take photo #####'
+def takePhoto(dgain, gain, exposure, manual):
+    # print '##### Take photo #####'
     
     cmd = "/home/pi/FluxPlanet/userland/camera_i2c"
     process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     process.communicate()
 
-    cmd = "sudo /home/pi/fluxd/rpiraw -g %d -e %d -m %d -o /var/www/html/fluxd/rpiraw.raw" % (int(gain), int(exposure), int(manual))
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    process.communicate()
-
-def convertImg(scale, enhance):
-    cmd = "/home/pi/fluxd/debayer -sf 1 -s %f -c %f -i /var/www/html/fluxd/rpiraw.raw -o /var/www/html/fluxd/rpiraw.ppm" % (float(scale), float(enhance))
+    cmd = "sudo /home/pi/fluxd/rpiraw -dg %d -g %d -e %d -m %d -o /var/www/html/fluxd/rpiraw.raw" % (int(dgain), int(gain), int(exposure), int(manual))
     print cmd
     process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    process.communicate()
+    print process.communicate()[0]
 
-    print "PIL"
-    # ppm to jpg & png
+def convertImg(scale, enhance, do_stretch, stretch):
+    cmd = "/home/pi/fluxd/debayer -sd %d -sv %f -sf 1 -s %f -c %f -i /var/www/html/fluxd/rpiraw.raw -o /var/www/html/fluxd/rpiraw.ppm" % (int(do_stretch), float(stretch), float(scale), float(enhance))
+    print cmd
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    print process.communicate()[0]
+
+    print "PIL: convert ppm to jpg"
     Image.open("/var/www/html/fluxd/rpiraw.ppm").save("/var/www/html/fluxd/rpiraw.jpg")
-    Image.open("/var/www/html/fluxd/rpiraw.ppm").save("/var/www/html/fluxd/rpiraw.png")
 
 def get_ip_address(ifname):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -155,6 +154,7 @@ def listenToServer():
             server_address = addr[0]
             
             jsonString = '{"ACK" : { "MAC" : "' + str(getnode()) + '", "VER" : "' + ver + '", "CAM" : ' + str(is_cam) + '} }'
+            print jsonString
             conn.send(jsonString)
             server_found = True
         # elif 'sebservice' in serverData:
@@ -220,7 +220,7 @@ def broadcastReceiver():
             sendMsgToServer(jsonString)
         elif "Update" in data :
             jData =  json.loads(data)
-            masterIP = jData['Update']['serverip'];
+            masterIP = jData['Update']['serverip']
             cmd = "/home/pi/bin/fluxdebugger_update.sh %s" % (masterIP, )
             process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
             process.communicate()
@@ -232,12 +232,12 @@ def broadcastReceiver():
                 continue
             print "convert"
             jData =  json.loads(data)
-            convertImg(jData['Convert']['scale'], jData['Convert']['enhance'])
+            convertImg(jData['Convert']['scale'], jData['Convert']['enhance'], jData['Convert']['do_stretch'], jData['Convert']['stretch'])
         elif "Take" in data :
             if not is_cam:
                 continue
             jData =  json.loads(data)
-            takePhoto(jData['Take']['gain'], jData['Take']['exposure'], jData['Take']['manual'])
+            takePhoto(jData['Take']['dgain'], jData['Take']['gain'], jData['Take']['exposure'], jData['Take']['manual'])
         elif data != 'Controller' :
             cmdHandler(data)
 
