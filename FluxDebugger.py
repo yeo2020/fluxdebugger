@@ -21,9 +21,10 @@ import numpy as np
 from uuid import getnode
 
 global ver
-ver = '0.21'
+ver = '0.25'
 
 global is_cam
+global take_process
 
 def restartPi():
     print '#####Restart PI #####'
@@ -65,20 +66,32 @@ def detectCamModule():
     output = process.communicate()[0]
     is_cam = int(output)
 
-def takePhoto(dgain, gain, exposure, manual):
+def readyPhoto(frames, interval, dgain, gain, exposure, manual):
+    global take_process
     # print '##### Take photo #####'
     
+    cmd = "ps -ef | grep rpiraw | awk '{print $2}' | xargs sudo kill -s SIGKILL"
+    subprocess.Popen(cmd, shell=True)
+
     cmd = "/home/pi/FluxPlanet/userland/camera_i2c"
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    process.communicate()
+    process = subprocess.Popen(cmd, shell=True)
 
-    cmd = "sudo /home/pi/fluxd/rpiraw -dg %d -g %d -e %d -m %d -o /var/www/html/fluxd/rpiraw.raw" % (int(dgain), int(gain), int(exposure), int(manual))
+    cmd = "sudo /home/pi/fluxd/rpiraw -f %d -i %d -dg %d -g %d -e %d -m %d -o /var/www/html/fluxd/rpiraw.raw" % (int(frames), int(interval), int(dgain), int(gain), int(exposure), int(manual))
     print cmd
-    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
-    print process.communicate()[0]
+    
+    take_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, shell=True)
 
-def convertImg(scale, enhance, do_stretch, stretch):
-    cmd = "/home/pi/fluxd/debayer -sd %d -sv %f -sf 1 -s %f -c %f -i /var/www/html/fluxd/rpiraw.raw -o /var/www/html/fluxd/rpiraw.ppm" % (int(do_stretch), float(stretch), float(scale), float(enhance))
+    # take_process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    # print process.communicate()[0]
+
+def takePhoto():
+    global take_process
+    take_process.stdin.write('\n')
+
+    print '##### Take photo #####'
+
+def convertImg(index, scale, enhance, do_stretch, stretch, bx, by):
+    cmd = "/home/pi/fluxd/debayer -fi %d -bx %f -by %f -sd %d -sv %f -sf 1 -s %f -c %f -i /var/www/html/fluxd/rpiraw.raw -o /var/www/html/fluxd/rpiraw.ppm" % (int(index), float(bx), float(by), int(do_stretch), float(stretch), float(scale), float(enhance))
     print cmd
     process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     print process.communicate()[0]
@@ -232,12 +245,16 @@ def broadcastReceiver():
                 continue
             print "convert"
             jData =  json.loads(data)
-            convertImg(jData['Convert']['scale'], jData['Convert']['enhance'], jData['Convert']['do_stretch'], jData['Convert']['stretch'])
-        elif "Take" in data :
+            convertImg(jData['Convert']['index'], jData['Convert']['scale'], jData['Convert']['enhance'], jData['Convert']['do_stretch'], jData['Convert']['stretch'], jData['Convert']['bx'], jData['Convert']['by'])
+        elif "Ready" in data :
             if not is_cam:
                 continue
             jData =  json.loads(data)
-            takePhoto(jData['Take']['dgain'], jData['Take']['gain'], jData['Take']['exposure'], jData['Take']['manual'])
+            readyPhoto(jData['Ready']['frames'], jData['Ready']['interval'], jData['Ready']['dgain'], jData['Ready']['gain'], jData['Ready']['exposure'], jData['Ready']['manual'])
+        elif "Take" in data :
+            if not is_cam:
+                continue
+            takePhoto()
         elif data != 'Controller' :
             cmdHandler(data)
 
