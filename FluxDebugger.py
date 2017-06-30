@@ -19,12 +19,104 @@ import numpy as np
 # import math
 # from numpy.lib.stride_tricks import as_strided
 from uuid import getnode
+import RPi.GPIO as GPIO
+
 
 global ver
-ver = '0.25'
+ver = '0.26'
+
+global gpio_dslr_shutter
+global gpio_dslr_focus
+
+gpio_dslr_shutter = 22
+gpio_dslr_focus = 23
 
 global is_cam
 global take_process
+global movfile
+
+def initGPIO():
+    global gpio_dslr_shutter
+    global gpio_dslr_focus
+
+    GPIO.cleanup()
+    GPIO.setmode(GPIO.BCM)
+    GPIO.setup(gpio_dslr_shutter, GPIO.OUT)
+    GPIO.setup(gpio_dslr_focus, GPIO.OUT)
+    
+    # gpio defaults
+    GPIO.output(gpio_dslr_focus, GPIO.LOW)
+    GPIO.output(gpio_dslr_shutter, GPIO.LOW)
+
+def killGphoto2():
+    print 'Kill gphoto2 process'
+    cmd = "ps -A | grep gvfsd-gphoto2 | awk '{print $1}' | xargs sudo kill -s SIGKILL"
+    subprocess.Popen(cmd, shell=True)
+
+def detectDSLR():
+    cmd = "gphoto2 --auto-detect | grep Canon"
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    cannon = process.communicate()[0]
+    cannon = cannon.replace("\n", "")
+
+    return len(cannon)
+
+def rmFilesFromDSLR():
+    if not detectDSLR():
+        print 'No camera found'
+        return
+
+    killGphoto2()
+    print 'delete all files from DSLR'
+    cmd = 'gphoto2 -DR'
+    subprocess.Popen(cmd, shell=True)
+
+def getLastFileFromDSLR():
+    global movfile
+
+    if not detectDSLR():
+        print 'No camera found'
+        return
+
+    print "rm *.MOV files at /home/pi/fluxd/"
+
+    cmd4 = "rm /home/pi/fluxd/*.MOV"
+    process4 = subprocess.Popen(cmd4, shell=True, stdout=subprocess.PIPE)
+    print process4.communicate()[0]
+
+    cmd = "gphoto2 --list-files | grep application | tail -n 1 | awk '{split($1, a, \"#\"); print a[2]}'"
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    output = process.communicate()[0]
+
+    cmd2 = "gphoto2 --list-files | grep application | tail -n 1 | awk '{print $2}'"
+    process2 = subprocess.Popen(cmd2, shell=True, stdout=subprocess.PIPE)
+    movfile = process2.communicate()[0]
+    movfile = movfile.replace("\n", "")
+
+    cmd3 = "gphoto2 --get-file %d" % (int(output), )
+    process3 = subprocess.Popen(cmd3, shell=True, stdout=subprocess.PIPE)
+    print process3.communicate()[0]
+
+    print "Got the mov file named %s from DSLR" % (movfile, )
+
+def readyDSLR():
+    global gpio_dslr_focus
+    killGphoto2()
+    GPIO.output(gpio_dslr_focus, GPIO.HIGH)
+    print 'DSLR is ready to take video'
+
+    jsonString = '{"RES": "RdyToTake"}'
+    sendMsgToServer(jsonString)
+
+def endVideoOfDSLR():
+    global gpio_dslr_focus
+    time.sleep(3)
+    GPIO.output(gpio_dslr_focus, GPIO.HIGH)
+    time.sleep(1)
+    GPIO.output(gpio_dslr_focus, GPIO.LOW)
+    time.sleep(1)
+
+    print 'End of Video of DSLR'
 
 def restartPi():
     print '#####Restart PI #####'
@@ -84,11 +176,39 @@ def readyPhoto(frames, interval, dgain, gain, exposure, manual):
     # take_process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
     # print process.communicate()[0]
 
+    jsonString = '{"RES": "RdyToTake"}'
+    sendMsgToServer(jsonString)
+
 def takePhoto():
     global take_process
-    take_process.stdin.write('\n')
 
+    take_process.stdin.write('\n')
     print '##### Take photo #####'
+
+    jsonString = '{"RES": "EndOfTake"}'
+    sendMsgToServer(jsonString)
+
+
+def takePhotoWithDSLR():
+    global gpio_dslr_focus
+    global movfile
+
+    detectDSLR()
+
+    GPIO.output(gpio_dslr_focus, GPIO.LOW)
+    print '##### Take video with DSLR #####'
+    endVideoOfDSLR()
+    getLastFileFromDSLR()
+
+    time.sleep(1)
+
+    if detectDSLR():
+        cmd = "/home/pi/bin/ffmpeg -i %s -r 1 mov_%%02d.jpg" % (movfile,)
+        process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+        print process.communicate()[0]
+
+    jsonString = '{"RES": "EndOfTake"}'
+    sendMsgToServer(jsonString)
 
 def convertImg(index, scale, enhance, do_stretch, stretch, bx, by):
     cmd = "/home/pi/fluxd/debayer -fi %d -bx %f -by %f -sd %d -sv %f -sf 1 -s %f -c %f -i /var/www/html/fluxd/rpiraw.raw -o /var/www/html/fluxd/rpiraw.ppm" % (int(index), float(bx), float(by), int(do_stretch), float(stretch), float(scale), float(enhance))
@@ -98,6 +218,20 @@ def convertImg(index, scale, enhance, do_stretch, stretch, bx, by):
 
     print "PIL: convert ppm to jpg"
     Image.open("/var/www/html/fluxd/rpiraw.ppm").save("/var/www/html/fluxd/rpiraw.jpg")
+
+    jsonString = '{"RES": "EndOfCvt"}'
+    sendMsgToServer(jsonString)
+
+def mov2jpg(index):
+    offset = int(index) + 1
+
+    cmd = "cp mov_%02d.jpg /var/www/html/fluxd/rpiraw.jpg" %(offset, )
+    print cmd
+    process = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE)
+    print process.communicate()[0]
+
+    jsonString = '{"RES": "EndOfCvt"}'
+    sendMsgToServer(jsonString)
 
 def get_ip_address(ifname):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -114,16 +248,12 @@ def get_ip_address(ifname):
             print "socket error %s " % msg
             time.sleep(1)
         except IOError as e:
-            print "IO Error %s " %e
+            print "IO Error %s " % e
             time.sleep(1)
     return address
 
-
-
 def cmdHandler(data):
     return
-
-
 
 global server_found
 server_found = False
@@ -240,21 +370,28 @@ def broadcastReceiver():
             restartPi()
         elif "RmLogs" in data :
             removeLogs()
+        elif "RmDSLR" in data :
+            if not is_cam:
+                rmFilesFromDSLR()
         elif "Convert" in data :
-            if not is_cam:
-                continue
             print "convert"
+            
             jData =  json.loads(data)
-            convertImg(jData['Convert']['index'], jData['Convert']['scale'], jData['Convert']['enhance'], jData['Convert']['do_stretch'], jData['Convert']['stretch'], jData['Convert']['bx'], jData['Convert']['by'])
+            if is_cam:
+                convertImg(jData['Convert']['index'], jData['Convert']['scale'], jData['Convert']['enhance'], jData['Convert']['do_stretch'], jData['Convert']['stretch'], jData['Convert']['bx'], jData['Convert']['by'])
+            else :
+                mov2jpg(jData['Convert']['index'])
         elif "Ready" in data :
-            if not is_cam:
-                continue
-            jData =  json.loads(data)
-            readyPhoto(jData['Ready']['frames'], jData['Ready']['interval'], jData['Ready']['dgain'], jData['Ready']['gain'], jData['Ready']['exposure'], jData['Ready']['manual'])
+            if is_cam:      # camera exists
+                jData =  json.loads(data)
+                readyPhoto(jData['Ready']['frames'], jData['Ready']['interval'], jData['Ready']['dgain'], jData['Ready']['gain'], jData['Ready']['exposure'], jData['Ready']['manual'])
+            else :
+                readyDSLR()
         elif "Take" in data :
-            if not is_cam:
-                continue
-            takePhoto()
+            if is_cam:
+                takePhoto()
+            else : 
+                takePhotoWithDSLR()
         elif data != 'Controller' :
             cmdHandler(data)
 
@@ -288,5 +425,6 @@ def slaveReady():
 # ps -ef | grep FluxDebugger | grep sudo | awk '{print $2}' | xargs sudo kill -9
 # sudo netstat -nap | grep 4123 | awk '{split($NF, a, "/"); print a[1]}' | xargs sudo kill -9
 detectCamModule()
+initGPIO()
 Thread(target = slaveReady).start()
 listenToServer()
