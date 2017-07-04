@@ -23,7 +23,7 @@ import RPi.GPIO as GPIO
 
 
 global ver
-ver = '0.26'
+ver = '0.27'
 
 global gpio_dslr_shutter
 global gpio_dslr_focus
@@ -39,6 +39,8 @@ def initGPIO():
     global gpio_dslr_shutter
     global gpio_dslr_focus
 
+    time.sleep(10)
+    print 'Init GPIO for DSLR'
     GPIO.cleanup()
     GPIO.setmode(GPIO.BCM)
     GPIO.setup(gpio_dslr_shutter, GPIO.OUT)
@@ -425,6 +427,6 @@ def slaveReady():
 # ps -ef | grep FluxDebugger | grep sudo | awk '{print $2}' | xargs sudo kill -9
 # sudo netstat -nap | grep 4123 | awk '{split($NF, a, "/"); print a[1]}' | xargs sudo kill -9
 detectCamModule()
-initGPIO()
+Thread(target = initGPIO).start()
 Thread(target = slaveReady).start()
 listenToServer()
